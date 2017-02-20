@@ -130,11 +130,8 @@ class LaneFinding:
         binnings[negative_idx] = []
 
         for line in lines:
-            dy, dx = line[0][0:2] - line[0][2:4]
+            dx, dy = line[0][0:2] - line[0][2:4]
             slope = dy / dx
-            angle = math.atan(abs(slope))
-            #if angle < math.pi / 4 or angle > math.pi / 2.5:
-            #    continue
             if slope >= 0:
                 binnings[positve_idx].append(line)
                 slopes[positve_idx].append(slope)
@@ -144,40 +141,40 @@ class LaneFinding:
 
         return binnings, slopes
 
-    def filter_by_vanishing_point(self, lines, max_dgap=30):
-        ret = []
-        for line in lines:
-            if self.get_dist_to_vanishing_point(line) > max_dgap:
-                continue
-            ret.append(line)
-        return ret
+    def scan_binning(self, binning, slopes, delta_slope_err=0.07):
+        filtered_binning = []
+        filtered_slopes = []
+        median_slope = np.median(slopes)
+        for i, slope in enumerate(slopes):
+            if abs(slope - median_slope) <= delta_slope_err:
+                filtered_binning.append(binning[i])
+                filtered_slopes.append(slope)
 
-    def average_bin(self, lines):
-        k_b = []
-        for line in lines:
-            k, b = self.get_k_and_b(line)
-            k_b.append((k, b))
-        avg_k, avg_b = np.average(k_b, axis=0)
-        return self.extend_line(avg_k, avg_b)
+        #TODO: empty filtered_binning
+        _max_vec = np.max(filtered_binning, axis=0)
+        max_vpos = np.max([_max_vec[0][1], _max_vec[0][3]])
+        _min_vec = np.min(filtered_binning, axis=0)
+        min_vpos = np.min([_min_vec[0][1], _min_vec[0][3]])
 
-    def get_dist_to_vanishing_point(self, line, vanishing_point=(480, 300)):
-        vx, vy = vanishing_point
-        x1, y1, x2, y2 = line[0]
-        d = abs((y2 - y1) * vx - (x2 - x1) * vy + x2 * y1 - x1 * y2) \
-            / math.sqrt((y2 - y1) ** 2 + (x2 - x1) ** 2)
-        return d
+        step = 5
+        vpos = min_vpos
+        scanned_middle_points = []
+        scanned_lane_width = []
+        while vpos < max_vpos:
+            holder = []
+            for line in filtered_binning:
+                if (vpos - line[0][1]) * (vpos - line[0][3]) < 0:
+                    holder.append([self.get_horizontal_pos(vpos, line), vpos, ])
+                if len(holder) >= 2:
+                    break
+            if len(holder) >= 2:
+                width = abs(holder[0][0] - holder[1][0])
+                if width > 2:
+                    scanned_middle_points.append(np.average(holder, axis=0))
+                    scanned_lane_width.append(width)
+            vpos += step
 
-    def get_k_and_b(self, line):
-        x1, y1, x2, y2 = line[0]
-        # b for pos at y=540
-        b = ((y2 - 540) * x1 - (y1 - 540) * x2) / (y2 - y1)
-        # k for slope
-        k = (x1 - b) / (y1 - 540)
-        return k, b
-
-    def extend_line(self, k, b, upper_bound=320):
-        x = (upper_bound - 540) * k + b
-        return np.array([[b, 540, x, upper_bound]])
+        return scanned_middle_points, scanned_lane_width
 
     def get_horizontal_pos(self, vpos, line):
         k = (line[0][1] - vpos) / (vpos - line[0][3])
@@ -186,17 +183,12 @@ class LaneFinding:
     def fit_line(self, points, widths, thickiria=0.6, vmax=539, vmin=330):
         thickness = widths[-1] * thickiria
         _line = np.array([np.concatenate([points[0], points[-1]])])
+        #vmin = min(vmin, points[0][1])
+        #vmax = max(vmax, points[1][1])
         hmax = self.get_horizontal_pos(vmax, _line)
         hmin = self.get_horizontal_pos(vmin, _line)
         expanded_line = np.array([list(map(int, [hmax, vmax, hmin, vmin]))])
         return expanded_line, 13#thickness
-
-    def draw_debug(self, img, lines):
-        line_img = np.zeros((img.shape[0], img.shape[1], 3), dtype=np.uint8)
-        draw_lines(line_img, lines)
-        debug = weighted_img(line_img, img)
-        cv2.imshow("debug", debug)
-        cv2.waitKey(-1)
 
     def pipeline(self, img):
         copy = np.copy(img) * 0
@@ -210,19 +202,19 @@ class LaneFinding:
         high_threshold = 200
         edges = cv2.Canny(blurred_image, low_threshold, high_threshold)
 
-        vertices = np.array([[(0, 540), (960, 540), (480, 315)]], np.int32)
+        vertices = np.array([[(0, 540), (960, 540), (480, 330)]], np.int32)
         masked_image = region_of_interest(edges, vertices)
 
-        rho = 3
-        theta = np.pi / 90
+        rho = 1
+        theta = np.pi / 135
         threshold = 1
-        min_line_len = 8
-        max_line_gap = 3
+        min_line_len = 10
+        max_line_gap = 4
         hough_lines_image, lines = hough_lines(
             masked_image, rho, theta, threshold, min_line_len, max_line_gap)
 
         hough_image = weighted_img(hough_lines_image, img)
-        #return hough_image
+        return hough_image
         #cv2.imshow("hough", blended_image)
         #cv2.waitKey(-1)
 
@@ -230,13 +222,17 @@ class LaneFinding:
 
         line_img = np.zeros((img.shape[0], img.shape[1], 3), dtype=np.uint8)
         for b, s in zip(binnings, slopes):
-            # TODO
+            middle_points, lane_widths = self.scan_binning(
+                b, s, delta_slope_err=0.1)
+            if len(lane_widths) <= 1:
+                continue
+            line, thickness = self.fit_line(middle_points, lane_widths)
             draw_lines(line_img, [line, ], thickness=int(thickness))
 
         blended_image = weighted_img(line_img, img)
         #cv2.imshow("mine", blended_image)
         #cv2.waitKey(-1)
-        return blended_image
+        return hough_image
 
 
     def run_image_dir(self):
@@ -262,27 +258,4 @@ def test():
     lf = LaneFinding("test_images")
     lf.run_image_dir()
 
-#test()
-
-if __name__ == "__main__":
-    # Import everything needed to edit/save/watch video clips
-    from moviepy.editor import VideoFileClip
-    from IPython.display import HTML
-
-    def process_image(image):
-        # NOTE: The output you return should be a color image (3 channel) for processing video below
-        # TODO: put your pipeline here,
-        # you should return the final output (image where lines are drawn on lanes)
-        lf = LaneFinding("test_images")
-        result = lf.run_image(image)
-        return result
-
-    #white_output = "white.mp4"
-    #clip1 = VideoFileClip("solidWhiteRight.mp4")
-    #white_clip = clip1.fl_image(process_image) #NOTE: this function expects color images!!
-    #white_clip.write_videofile(white_output, audio=False)
-
-    yellow_output = 'yellow.mp4'
-    clip2 = VideoFileClip('solidYellowLeft.mp4')
-    yellow_clip = clip2.fl_image(process_image)
-    yellow_clip.write_videofile(yellow_output, audio=False)
+test()
