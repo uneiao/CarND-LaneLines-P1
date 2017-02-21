@@ -147,6 +147,11 @@ class LaneFinding:
         return binnings, slopes
 
     def filter_by_vanishing_point(self, lines, max_dgap=30):
+        """
+        Filter lines by comparing maximum gap with distance
+        of a line to the 'vanishing point', and eliminate
+        lines those didn't head to the 'vanishing point'.
+        """
         ret = []
         for line in lines:
             if self.get_dist_to_vanishing_point(line) > max_dgap:
@@ -155,6 +160,12 @@ class LaneFinding:
         return ret
 
     def average_bin(self, lines):
+        """
+        Return weighted average of line equations.
+        The parameters of line equations is k and b presented
+        in a method below. Using length of a line segment as
+        its own weight.
+        """
         k_b = []
         weights = []
         for line in lines:
@@ -171,6 +182,9 @@ class LaneFinding:
         return self.extend_line(avg_k, avg_b)
 
     def get_dist_to_vanishing_point(self, line):
+        """
+        Return euclidean distance from a line to the point.
+        """
         vanishing_point = (self.width / 2, self.height * 0.56)
         vx, vy = vanishing_point
         x1, y1, x2, y2 = line[0]
@@ -179,6 +193,11 @@ class LaneFinding:
         return d
 
     def get_k_and_b(self, line):
+        """
+        K represents slope of a line,
+        b is the horizontal position a line intersects with
+        the bottom of the image.
+        """
         bottom = self.height
         x1, y1, x2, y2 = line[0]
         if y1 == y2:
@@ -196,6 +215,9 @@ class LaneFinding:
         return math.sqrt((y2 - y1) ** 2 + (x2 - x1) ** 2)
 
     def extend_line(self, k, b, h_ratio=0.61):
+        """
+        Extrapolate a line to the middle of image (height * ratio).
+        """
         upper_bound=int(h_ratio * self.height)
         x = (upper_bound - self.height) * k + b
         return np.array([list(map(int, [b, self.height, x, upper_bound]))])
@@ -233,7 +255,7 @@ class LaneFinding:
         rho = 3
         theta = np.pi / 180
         threshold = 1
-        min_line_len = 10
+        min_line_len = 9
         max_line_gap = 4
         hough_lines_image, lines = hough_lines(
             masked_image, rho, theta, threshold, min_line_len, max_line_gap)
@@ -299,12 +321,12 @@ if __name__ == "__main__":
     white_clip = clip1.fl_image(process_image) #NOTE: this function expects color images!!
     white_clip.write_videofile(white_output, audio=False)
 
-    yellow_output = 'yellow.mp4'
-    clip2 = VideoFileClip('solidYellowLeft.mp4')
+    yellow_output = "yellow.mp4"
+    clip2 = VideoFileClip("solidYellowLeft.mp4")
     yellow_clip = clip2.fl_image(process_image)
     yellow_clip.write_videofile(yellow_output, audio=False)
 
-    fun_output = "fun.mp4"
+    fun_output = "extra.mp4"
     clip3 = VideoFileClip("challenge.mp4")
     fun_clip = clip3.fl_image(process_image)
     fun_clip.write_videofile(fun_output, audio=False)
